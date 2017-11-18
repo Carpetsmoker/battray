@@ -247,7 +247,7 @@ def linux_upower():
         return False
 
     bus = dbus.SystemBus()
-    upower = bus.get_object('org.freedesktop.UPower', '/org/freedesktop/UPower/devices/battery_BAT0')
+    upower = bus.get_object('org.freedesktop.UPower', '/org/freedesktop/UPower/devices/DisplayDevice')
     #upower = bus.get_object('org.freedesktop.UPower', '/org/freedesktop/UPower/devices/battery_BAT1')
     iface = dbus.Interface(upower, 'org.freedesktop.DBus.Properties')
     info = iface.GetAll('org.freedesktop.UPower.Device')
