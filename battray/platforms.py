@@ -247,6 +247,12 @@ def linux_upower():
         return False
 
     bus = dbus.SystemBus()
+
+    # trigger refresh
+    proxy = bus.get_object('org.freedesktop.UPower', '/org/freedesktop/UPower/devices/line_power_AC')
+    dbus_method = proxy.get_dbus_method('Refresh', 'org.freedesktop.UPower.Device')
+    dbus_method("None")
+
     upower = bus.get_object('org.freedesktop.UPower', '/org/freedesktop/UPower/devices/DisplayDevice')
     #upower = bus.get_object('org.freedesktop.UPower', '/org/freedesktop/UPower/devices/battery_BAT1')
     iface = dbus.Interface(upower, 'org.freedesktop.DBus.Properties')
