@@ -295,7 +295,7 @@ class Battray(object):
         if percent == -1:
             text.append('Cannot get battery percentage status.\n')
         else:
-            text.append('{}% battery power remaining.\n'.format(percent))
+            text.append('{:.4g}% battery power remaining.\n'.format(percent))
 
         if lifetime == -1:
             text.append('Unknown lifetime remaining.\n')

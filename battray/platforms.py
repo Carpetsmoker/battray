@@ -17,7 +17,7 @@
 #            None if unknown.
 #
 
-import logging, sys, os
+import logging, sys, os, glob
 
 def find():
     platform = ''
@@ -121,118 +121,78 @@ def openbsd():
 def linux():
     """  Linux, being Linux, has several incompatible ways of doing this. """
 
-    # Disabled because getting it through /sys/ doesn't seem to work very
-    # reliably any more :-/
-    for linux_sucks in ['linux_upower', 'linux_sys_new', 'linux_sys_old']:
-        try:
-            result = globals().get(linux_sucks)()
-        except Exception as exc:
-            logging.warning(exc)
-            continue
+    for linux_modes in ['linux_upower', 'linux_sysfs']:
+        result = globals().get(linux_modes)()
         if result != False:
-            logging.info('Using {}'.format(linux_sucks))
+            logging.info('Using {}'.format(linux_modes))
             return result
     return False
 
-def linux_sys_new():
-    """  """
 
-    path = None
-    # Some systems seem to have BAT1 but not BAT0, so use the first one we
-    # encounter.
-    for i in range(0, 4):
-        p = '/sys/class/power_supply/BAT{}'.format(i)
-        if os.path.exists(p):
-            path = p
-            break
+def linux_sysfs():
+    """ Use data from sysfs """
+    SYSFS = "/sys/class/power_supply"
 
-    if path is None:
-        return False
+    def _gets(bat, attr):
+        path = os.path.join(SYSFS, bat, attr)
+        try:
+            with open(path) as f: return "\n".join(f.readlines()).strip()
+        except:
+            return ""
 
-    if not os.path.exists('{}/energy_now'.format(path)):
-        return False
+    def _get(bat, attr):
+        return int(_gets(bat, attr))
 
-    r = lambda f: open('{}/{}'.format(path, f), 'r').read().strip()
-    ri = lambda f: int(r(f))
+    def _ttl(state, max, now, rate):
+        try:
+            if state: ttl = 3600 * (max - now) / rate
+            else: ttl = 3600 * now / rate
+        except:
+            ttl = False
+        return ttl
 
-    status = r('status')
-    if status == 'Charging':
-        ac = True
-        charging = True
-    elif status == 'Discharging':
-        ac = False
-        charging = False
-    elif status == 'Full':
-        ac = True
-        charging = False
-    else:
-        ac = False
-        charging = False
+    batteries = {}
+    for entry in os.listdir(SYSFS):
+        if "BAT" in entry:
+            print('e:', entry)
+            batteries[entry] = {'id': entry}
 
-    percent = ri('capacity')
-    drain_rate = ri('power_now')
-    full_capacity = ri('energy_full')
-    remaining = ri('energy_now')
+    for bat in batteries:
+        status = _gets(bat, "status")
+        charging = status == "Charging"
+        # microvolts
+        voltage = _get(bat, "voltage_now") / 1000
+        if os.path.exists(os.path.join(SYSFS, bat, "energy_full")):
+            # microwatthours
+            max      = _get(bat, "energy_full") / 1000
+            max_orig = _get(bat, "energy_full_design") / 1000
+            now      = _get(bat, "energy_now") / 1000
+            rate     = _get(bat, "power_now") / 1000
+        else:
+            # microamperehours
+            max      = _get(bat, "charge_full") / voltage
+            max_orig = _get(bat, "charge_full_design") / voltage
+            now      = _get(bat, "charge_now") / voltage
+            rate     = _get(bat, "charge_now") / voltage
 
-    if charging:
-        lifetime = (full_capacity - remaining) / drain_rate * 60
-    elif drain_rate > 0:
-        lifetime = remaining / drain_rate * 60
-    else:
-        lifetime = -1
+        batteries[bat]['charging']  = charging
+        batteries[bat]['percent']   = (now / max) * 100
+        batteries[bat]['wearlevel'] = (max / max_orig) * 100
+        batteries[bat]['now']       = now
+        batteries[bat]['rate']      = rate
+        batteries[bat]['ttl']       = _ttl(charging, max, now, rate)
 
-    return (1, ac, charging, percent, lifetime)
+    percent = ttl = 0
+    charging = False
+    for bat in batteries:
+        percent  += batteries[bat]['percent']
+        ttl      += batteries[bat]['ttl']
+        charging |= batteries[bat]['charging']
+    percent /= len(batteries)
 
+    ac = any (map (lambda x: int(open(x).read().strip())==1, glob.glob ("/sys/class/power_supply/AC*/online")))
 
-def linux_sys_old():
-    """  """
-
-    path = None
-    # Some systems seem to have BAT1 but not BAT0, so use the first one we
-    # encounter.
-    for i in range(0, 4):
-        p = '/sys/class/power_supply/BAT{}'.format(i)
-        if os.path.exists(p):
-            path = p
-            break
-
-    if path is None:
-        return False
-
-    if not os.path.exists('{}/current_now'.format(path)):
-        return False
-
-    r = lambda f: open('{}/{}'.format(path, f), 'r').read().strip()
-    ri = lambda f: int(r(f))
-
-    status = r('status')
-    if status == 'Charging':
-        ac = True
-        charging = True
-    elif status == 'Discharging':
-        ac = False
-        charging = False
-    elif status == 'Full':
-        ac = True
-        charging = False
-    else:
-        ac = False
-        charging = False
-
-    percent = ri('capacity')
-
-    drain_rate = ri('current_now')
-    remaining = ri('charge_now')
-    full_capacity = ri('charge_full')
-
-    if charging:
-        lifetime = (full_capacity - remaining) / drain_rate * 60
-    elif drain_rate > 0:
-        lifetime = remaining / drain_rate * 60
-    else:
-        lifetime = -1
-
-    return (1, ac, charging, percent, lifetime)
+    return (1, ac, charging, percent, ttl)
 
 
 def linux_upower():
@@ -247,7 +207,13 @@ def linux_upower():
         return False
 
     bus = dbus.SystemBus()
-    upower = bus.get_object('org.freedesktop.UPower', '/org/freedesktop/UPower/devices/battery_BAT0')
+
+    # trigger refresh
+    proxy = bus.get_object('org.freedesktop.UPower', '/org/freedesktop/UPower/devices/line_power_AC')
+    dbus_method = proxy.get_dbus_method('Refresh', 'org.freedesktop.UPower.Device')
+    dbus_method("None")
+
+    upower = bus.get_object('org.freedesktop.UPower', '/org/freedesktop/UPower/devices/DisplayDevice')
     #upower = bus.get_object('org.freedesktop.UPower', '/org/freedesktop/UPower/devices/battery_BAT1')
     iface = dbus.Interface(upower, 'org.freedesktop.DBus.Properties')
     info = iface.GetAll('org.freedesktop.UPower.Device')
